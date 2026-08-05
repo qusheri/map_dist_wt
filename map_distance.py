@@ -48,6 +48,12 @@ def load_config(path: Path) -> dict[str, Any]:
     return cfg
 
 
+def save_config(path: Path, cfg: dict[str, Any]) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
 def capture_screen() -> np.ndarray:
     with MSS() as sct:
         monitor = sct.monitors[0]
@@ -530,6 +536,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch", action="store_true", help="Keep measuring repeatedly")
     parser.add_argument("--interval", type=float, default=0.25, help="Watch interval in seconds")
     parser.add_argument(
+        "--cell-size",
+        type=float,
+        help="Use this many meters per grid cell for the current run",
+    )
+    parser.add_argument(
+        "--ask-cell-size",
+        action="store_true",
+        help="Ask for meters per grid cell before starting and save the answer",
+    )
+    parser.add_argument(
         "--hotkey",
         action="store_true",
         help="Wait for F8 to measure; press F9 to exit (Windows)",
@@ -646,11 +662,48 @@ def run_hotkey_mode(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0
 
 
+def ask_cell_size(cfg: dict[str, Any], config_path: Path) -> None:
+    current = float(cfg["meters_per_grid_cell"])
+    print(f"Текущий размер клетки: {current:g} м")
+    while True:
+        try:
+            answer = input(
+                f"Введите размер клетки в метрах или нажмите Enter, чтобы оставить {current:g}: "
+            ).strip()
+        except EOFError:
+            answer = ""
+
+        if not answer:
+            print(f"Размер клетки: {current:g} м", flush=True)
+            return
+        try:
+            value = float(answer.replace(",", "."))
+        except ValueError:
+            print("Введите положительное число, например 275 или 1000.")
+            continue
+        if value <= 0:
+            print("Размер клетки должен быть больше нуля.")
+            continue
+
+        cfg["meters_per_grid_cell"] = value
+        try:
+            save_config(config_path, cfg)
+            print(f"Размер клетки сохранён: {value:g} м", flush=True)
+        except OSError as exc:
+            print(
+                f"Warning: размер клетки применяется, но config.json не удалось сохранить: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return
+
+
 def main() -> int:
     args = build_parser().parse_args()
 
     if getattr(sys, "frozen", False) and len(sys.argv) == 1:
         args.hotkey = True
+        args.ask_cell_size = True
     if args.hotkey and args.debug is None:
         args.debug = APP_DIR / "debug-processed.png"
 
@@ -659,6 +712,15 @@ def main() -> int:
     except Exception as exc:
         print(f"Config error: {exc}", file=sys.stderr)
         return 2
+
+
+    if args.cell_size is not None:
+        if args.cell_size <= 0:
+            print("Config error: --cell-size must be greater than zero.", file=sys.stderr)
+            return 2
+        cfg["meters_per_grid_cell"] = args.cell_size
+    if args.ask_cell_size:
+        ask_cell_size(cfg, args.config)
 
     if args.hotkey:
         if args.image or args.watch or args.save_crop:

@@ -5,7 +5,7 @@
     "width": 433,
     "height": 433
   },
-  "meters_per_grid_cell": 275,
+  "meters_per_grid_cell": 22.0,
   "grid_columns": 7,
   "grid_cell_px": null,
   "grid_detection": {
@@ -16,7 +16,18 @@
   "marker_detection": {
     "player_arrow_detection": {
       "triangle_hsv_ranges": [
-        [[0, 0, 170], [179, 100, 255]]
+        [
+          [
+            0,
+            0,
+            170
+          ],
+          [
+            179,
+            100,
+            255
+          ]
+        ]
       ],
       "min_triangle_area_px": 120,
       "max_triangle_area_px": 500,
@@ -28,14 +39,51 @@
       "min_small_triangle_side_px": 3,
       "max_small_triangle_side_px": 18,
       "min_small_triangle_solidity": 0.6,
-      "triangle_approximations": [0.04, 0.06, 0.08],
+      "triangle_approximations": [
+        0.04,
+        0.06,
+        0.08
+      ],
       "allow_blue_fallback": false,
       "blue_hsv_ranges": [
-        [[95, 90, 90], [135, 255, 255]]
+        [
+          [
+            95,
+            90,
+            90
+          ],
+          [
+            135,
+            255,
+            255
+          ]
+        ]
       ],
       "accent_hsv_ranges": [
-        [[18, 100, 170], [45, 255, 255]],
-        [[0, 0, 210], [179, 100, 255]]
+        [
+          [
+            18,
+            100,
+            170
+          ],
+          [
+            45,
+            255,
+            255
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            210
+          ],
+          [
+            179,
+            100,
+            255
+          ]
+        ]
       ],
       "min_blue_area_px": 80,
       "max_blue_area_px": 1500,
@@ -45,7 +93,18 @@
     },
     "yellow_target_detection": {
       "hsv_ranges": [
-        [[20, 140, 160], [45, 255, 255]]
+        [
+          [
+            20,
+            140,
+            160
+          ],
+          [
+            45,
+            255,
+            255
+          ]
+        ]
       ],
       "min_area_px": 25,
       "max_area_px": 1200,
