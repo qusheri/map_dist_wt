@@ -14,7 +14,12 @@ import numpy as np
 from mss import MSS
 
 
-CONFIG_PATH = Path("config.json")
+APP_DIR = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
+CONFIG_PATH = APP_DIR / "config.json"
 
 
 @dataclass(frozen=True)
@@ -263,34 +268,43 @@ def detect_player_arrow(
     min_small_triangle_side = int(cfg.get("min_small_triangle_side_px", 4))
     max_small_triangle_side = int(cfg.get("max_small_triangle_side_px", 18))
     min_small_triangle_solidity = float(cfg.get("min_small_triangle_solidity", 0.6))
-    approximation = float(cfg.get("triangle_approximation", 0.04))
+    approximations = cfg.get("triangle_approximations")
+    if approximations is None:
+        base_approximation = float(cfg.get("triangle_approximation", 0.04))
+        approximations = [base_approximation, 0.06, 0.08]
+    approximations = [float(value) for value in approximations]
 
     triangle_candidates: list[Marker] = []
     for contour in triangle_contours:
         area = float(cv2.contourArea(contour))
-        _, _, width, height = cv2.boundingRect(contour)
+        _, (rotated_width, rotated_height), _ = cv2.minAreaRect(contour)
+        short_side = min(rotated_width, rotated_height)
+        long_side = max(rotated_width, rotated_height)
         is_large_triangle = (
             min_triangle_area <= area <= max_triangle_area
-            and min_triangle_side <= width <= max_triangle_side
-            and min_triangle_side <= height <= max_triangle_side
+            and min_triangle_side <= short_side
+            and long_side <= max_triangle_side
         )
         is_small_triangle = (
             min_small_triangle_area <= area <= max_small_triangle_area
-            and min_small_triangle_side <= width <= max_small_triangle_side
-            and min_small_triangle_side <= height <= max_small_triangle_side
+            and min_small_triangle_side <= short_side
+            and long_side <= max_small_triangle_side
         )
         if not (is_large_triangle or is_small_triangle):
             continue
         perimeter = float(cv2.arcLength(contour, True))
         if perimeter <= 0:
             continue
-        vertices = len(cv2.approxPolyDP(contour, approximation * perimeter, True))
+        vertex_counts = [
+            len(cv2.approxPolyDP(contour, approximation * perimeter, True))
+            for approximation in approximations
+        ]
         hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
         solidity = 0.0 if hull_area <= 0 else area / hull_area
         required_solidity = (
             min_triangle_solidity if is_large_triangle else min_small_triangle_solidity
         )
-        if vertices != 3 or solidity < required_solidity:
+        if 3 not in vertex_counts or solidity < required_solidity:
             continue
         marker = contour_marker(contour, "player_triangle", "player_arrow")
         if marker is not None:
@@ -390,6 +404,7 @@ def detect_yellow_target(
     min_side = int(cfg.get("min_side_px", 7))
     max_side = int(cfg.get("max_side_px", 55))
     min_player_distance = float(cfg.get("min_player_distance_px", 20))
+    border_margin = float(cfg.get("border_margin_px", 12))
 
     candidates: list[Marker] = []
     for contour in contours:
@@ -403,6 +418,11 @@ def detect_yellow_target(
         if not 0.5 <= aspect <= 2.0 or marker.circularity < min_circularity:
             continue
         if math.hypot(marker.x - player.x, marker.y - player.y) < min_player_distance:
+            continue
+        if not (
+            border_margin <= marker.x <= map_image.shape[1] - border_margin
+            and border_margin <= marker.y <= map_image.shape[0] - border_margin
+        ):
             continue
         candidates.append(marker)
 
@@ -509,17 +529,145 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--watch", action="store_true", help="Keep measuring repeatedly")
     parser.add_argument("--interval", type=float, default=0.25, help="Watch interval in seconds")
+    parser.add_argument(
+        "--hotkey",
+        action="store_true",
+        help="Wait for F8 to measure; press F9 to exit (Windows)",
+    )
     return parser
+
+
+def raw_debug_path(processed_path: Path) -> Path:
+    stem = processed_path.stem
+    if stem.endswith("-processed"):
+        stem = stem[: -len("-processed")]
+    suffix = processed_path.suffix or ".png"
+    return processed_path.with_name(f"{stem}-minimap{suffix}")
+
+
+def save_failed_debug(map_image: np.ndarray, processed_path: Path, error: Exception) -> None:
+    debug = map_image.copy()
+    overlay = debug.copy()
+    cv2.rectangle(overlay, (0, 0), (debug.shape[1], 58), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.72, debug, 0.28, 0, debug)
+    cv2.putText(
+        debug,
+        "DETECTION ERROR",
+        (8, 20),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 0, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    message = str(error)
+    cv2.putText(
+        debug,
+        message[:58],
+        (8, 45),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.38,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.imwrite(str(processed_path), debug)
+
+
+def measure_once(args: argparse.Namespace, cfg: dict[str, Any]) -> None:
+    if args.image:
+        image = read_image(args.image)
+        map_image = image if args.image_is_map else crop_map(image, cfg["map_rect"])
+    else:
+        map_image = capture_map(cfg["map_rect"])
+
+    if args.save_crop:
+        cv2.imwrite(str(args.save_crop), map_image)
+        print(f"Saved minimap crop: {args.save_crop}", flush=True)
+        return
+
+    if args.debug:
+        cv2.imwrite(str(raw_debug_path(args.debug)), map_image)
+    try:
+        result = analyze_map(map_image, cfg, args.debug)
+    except Exception as exc:
+        if args.debug:
+            save_failed_debug(map_image, args.debug, exc)
+        raise
+    print_result(result)
+    sys.stdout.flush()
+
+
+def run_hotkey_mode(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    if sys.platform != "win32":
+        print("Error: global hotkey mode is supported only on Windows.", file=sys.stderr)
+        return 2
+
+    import ctypes
+    import winsound
+    from ctypes import wintypes
+
+    hotkey_message = 0x0312
+    no_repeat = 0x4000
+    measure_id = 1
+    exit_id = 2
+    vk_f8 = 0x77
+    vk_f9 = 0x78
+    user32 = ctypes.windll.user32
+
+    if not user32.RegisterHotKey(None, measure_id, no_repeat, vk_f8):
+        print("Error: F8 is already being used by another program.", file=sys.stderr)
+        return 2
+    if not user32.RegisterHotKey(None, exit_id, no_repeat, vk_f9):
+        user32.UnregisterHotKey(None, measure_id)
+        print("Error: F9 is already being used by another program.", file=sys.stderr)
+        return 2
+
+    print("Ready. Press F8 in War Thunder to measure distance. Press F9 to exit.", flush=True)
+    message = wintypes.MSG()
+    try:
+        while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+            if message.message != hotkey_message:
+                continue
+            if message.wParam == exit_id:
+                print("Exiting.", flush=True)
+                break
+            if message.wParam != measure_id:
+                continue
+            try:
+                measure_once(args, cfg)
+                winsound.Beep(1000, 90)
+            except Exception as exc:
+                print(f"Error: {exc}", file=sys.stderr, flush=True)
+                winsound.Beep(400, 180)
+    finally:
+        user32.UnregisterHotKey(None, measure_id)
+        user32.UnregisterHotKey(None, exit_id)
+    return 0
 
 
 def main() -> int:
     args = build_parser().parse_args()
+
+    if getattr(sys, "frozen", False) and len(sys.argv) == 1:
+        args.hotkey = True
+    if args.hotkey and args.debug is None:
+        args.debug = APP_DIR / "debug-processed.png"
 
     try:
         cfg = load_config(args.config)
     except Exception as exc:
         print(f"Config error: {exc}", file=sys.stderr)
         return 2
+
+    if args.hotkey:
+        if args.image or args.watch or args.save_crop:
+            print(
+                "Error: --hotkey cannot be combined with --image, --watch, or --save-crop.",
+                file=sys.stderr,
+            )
+            return 2
+        return run_hotkey_mode(args, cfg)
 
     if not args.image and args.delay > 0:
         delay = max(args.delay, 0.0)
@@ -528,22 +676,9 @@ def main() -> int:
 
     while True:
         try:
-            if args.image:
-                image = read_image(args.image)
-                map_image = image if args.image_is_map else crop_map(image, cfg["map_rect"])
-            else:
-                map_image = capture_map(cfg["map_rect"])
-
+            measure_once(args, cfg)
             if args.save_crop:
-                cv2.imwrite(str(args.save_crop), map_image)
-                print(f"Saved minimap crop: {args.save_crop}")
                 return 0
-
-            if args.debug:
-                # Keep the raw crop available even when marker detection fails.
-                cv2.imwrite(str(args.debug), map_image)
-            result = analyze_map(map_image, cfg, args.debug)
-            print_result(result)
         except Exception as exc:
             print(f"Error: {exc}", file=sys.stderr)
             if not args.watch:

@@ -101,3 +101,29 @@ python map_distance.py --image screenshot.png --debug debug.png
 ```powershell
 python map_distance.py --image minimap.png --image-is-map --debug debug.png
 ```
+
+## Сборка EXE
+
+```powershell
+.\build_exe.ps1
+```
+
+Готовые файлы появятся в `dist`:
+
+```text
+dist\WarThunderDistance.exe
+dist\config.json
+```
+
+Запусти `WarThunderDistance.exe` двойным кликом. Программа останется в консоли:
+
+- `F8` — сделать снимок миникарты и рассчитать расстояние;
+- `F9` — закрыть программу.
+
+При успешном расчёте звучит короткий высокий сигнал, при ошибке — низкий. Последний
+кадры сохраняются рядом с программой:
+
+- `debug-minimap.png` — исходный снимок миникарты;
+- `debug-processed.png` — найденные точки и маска распознавания.
+
+Оба файла обновляются при каждом нажатии `F8`, в том числе при ошибке распознавания.
