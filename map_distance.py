@@ -119,6 +119,30 @@ def resolve_grid_cell_px(map_image: np.ndarray, cfg: dict[str, Any]) -> float:
     raise ValueError("Grid size was not detected. Set grid_cell_px or grid_columns in config.json.")
 
 
+def validate_minimap(map_image: np.ndarray, cfg: dict[str, Any]) -> None:
+    validation_cfg = cfg.get("map_validation", {})
+    if not validation_cfg.get("enabled", True):
+        return
+    columns = cfg.get("grid_columns")
+    if columns is None:
+        return
+
+    expected_step = map_image.shape[1] / float(columns)
+    search_margin = float(validation_cfg.get("search_margin_ratio", 0.3))
+    detected_step = detect_grid_step_px(
+        map_image,
+        {
+            "min_cell_px": max(5, int(expected_step * (1.0 - search_margin))),
+            "max_cell_px": int(expected_step * (1.0 + search_margin)),
+        },
+    )
+    max_error = float(validation_cfg.get("max_grid_step_error_ratio", 0.15))
+    if detected_step is None or abs(detected_step - expected_step) / expected_step > max_error:
+        raise ValueError(
+            "Minimap grid not detected. Close in-game menus and make sure the minimap is visible."
+        )
+
+
 def detect_grid_step_px(map_image: np.ndarray, grid_cfg: dict[str, Any]) -> float | None:
     gray = cv2.cvtColor(map_image, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -250,6 +274,17 @@ def contour_marker(contour: np.ndarray, profile: str, role: str) -> Marker | Non
     )
 
 
+def contour_bright_fraction(
+    hsv: np.ndarray, contour: np.ndarray, min_value: int = 220
+) -> float:
+    outline = np.zeros(hsv.shape[:2], dtype=np.uint8)
+    cv2.drawContours(outline, [contour], -1, 255, 1)
+    values = hsv[:, :, 2][outline > 0]
+    if values.size == 0:
+        return 0.0
+    return float(np.mean(values >= min_value))
+
+
 def detect_player_arrow(
     map_image: np.ndarray, marker_cfg: dict[str, Any]
 ) -> tuple[Marker, np.ndarray]:
@@ -274,6 +309,7 @@ def detect_player_arrow(
     min_small_triangle_side = int(cfg.get("min_small_triangle_side_px", 4))
     max_small_triangle_side = int(cfg.get("max_small_triangle_side_px", 18))
     min_small_triangle_solidity = float(cfg.get("min_small_triangle_solidity", 0.6))
+    min_triangle_bright_fraction = float(cfg.get("min_triangle_bright_fraction", 0.25))
     approximations = cfg.get("triangle_approximations")
     if approximations is None:
         base_approximation = float(cfg.get("triangle_approximation", 0.04))
@@ -310,7 +346,12 @@ def detect_player_arrow(
         required_solidity = (
             min_triangle_solidity if is_large_triangle else min_small_triangle_solidity
         )
-        if 3 not in vertex_counts or solidity < required_solidity:
+        bright_fraction = contour_bright_fraction(hsv, contour)
+        if (
+            3 not in vertex_counts
+            or solidity < required_solidity
+            or bright_fraction < min_triangle_bright_fraction
+        ):
             continue
         marker = contour_marker(contour, "player_triangle", "player_arrow")
         if marker is not None:
@@ -318,6 +359,70 @@ def detect_player_arrow(
 
     if triangle_candidates:
         return max(triangle_candidates, key=lambda marker: marker.area), triangle_mask
+
+    edge_ranges = cfg.get(
+        "edge_triangle_hsv_ranges",
+        [
+            [[0, 0, 180], [179, 130, 255]],
+            [[18, 100, 160], [45, 255, 255]],
+        ],
+    )
+    edge_mask = build_hsv_mask(hsv, edge_ranges)
+    edge_mask = cv2.morphologyEx(
+        edge_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8)
+    )
+    edge_contours, _ = cv2.findContours(
+        edge_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    edge_margin = int(cfg.get("edge_triangle_margin_px", 2))
+    min_edge_area = float(cfg.get("min_edge_triangle_area_px", 3))
+    max_edge_area = float(cfg.get("max_edge_triangle_area_px", 80))
+    min_edge_side = float(cfg.get("min_edge_triangle_side_px", 1.5))
+    max_edge_side = float(cfg.get("max_edge_triangle_side_px", 20))
+    min_edge_solidity = float(cfg.get("min_edge_triangle_solidity", 0.5))
+    min_edge_bright_fraction = float(cfg.get("min_edge_triangle_bright_fraction", 0.2))
+
+    edge_candidates: list[Marker] = []
+    for contour in edge_contours:
+        area = float(cv2.contourArea(contour))
+        if not min_edge_area <= area <= max_edge_area:
+            continue
+        x, y, width, height = cv2.boundingRect(contour)
+        touches_edge = (
+            x <= edge_margin
+            or y <= edge_margin
+            or x + width >= map_image.shape[1] - edge_margin
+            or y + height >= map_image.shape[0] - edge_margin
+        )
+        if not touches_edge:
+            continue
+        perimeter = float(cv2.arcLength(contour, True))
+        if perimeter <= 0:
+            continue
+        _, (rotated_width, rotated_height), _ = cv2.minAreaRect(contour)
+        short_side = min(rotated_width, rotated_height)
+        long_side = max(rotated_width, rotated_height)
+        if not (min_edge_side <= short_side and long_side <= max_edge_side):
+            continue
+        vertex_counts = [
+            len(cv2.approxPolyDP(contour, approximation * perimeter, True))
+            for approximation in approximations
+        ]
+        hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
+        solidity = 0.0 if hull_area <= 0 else area / hull_area
+        bright_fraction = contour_bright_fraction(hsv, contour)
+        if (
+            3 not in vertex_counts
+            or solidity < min_edge_solidity
+            or bright_fraction < min_edge_bright_fraction
+        ):
+            continue
+        marker = contour_marker(contour, "player_edge_triangle", "player_arrow")
+        if marker is not None:
+            edge_candidates.append(marker)
+
+    if edge_candidates:
+        return max(edge_candidates, key=lambda marker: marker.area), edge_mask
 
     if not bool(cfg.get("allow_blue_fallback", False)):
         raise ValueError("Player arrow not found: no suitable white triangle was detected.")
@@ -449,6 +554,7 @@ def select_marker(markers: list[Marker], role: str) -> Marker:
 
 
 def analyze_map(map_image: np.ndarray, cfg: dict[str, Any], debug_path: Path | None = None) -> dict[str, Any]:
+    validate_minimap(map_image, cfg)
     grid_cell_px = resolve_grid_cell_px(map_image, cfg)
     marker_cfg = cfg["marker_detection"]
     first, player_mask = detect_player_arrow(map_image, marker_cfg)
