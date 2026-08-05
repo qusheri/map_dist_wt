@@ -87,7 +87,7 @@ python map_distance.py --delay 3 --debug debug.png
 В консоли будет строка такого вида:
 
 ```text
-526.0 m (0.526 km), grid=61.86px, from=player_arrow(43.2,295.4) to=yellow_marker(92.1,72.6)
+526.0 m, azimuth 37.4 deg
 ```
 
 Проверка на полном сохраненном скриншоте:

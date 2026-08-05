@@ -56,7 +56,10 @@ try {
         $builtExeName = "WarThunderDistance-updated.exe"
         Write-Warning "WarThunderDistance.exe is running; wrote the update as $builtExeName"
     }
-    Copy-Item -LiteralPath (Join-Path $projectRoot "config.json") -Destination (Join-Path $finalDist "config.json") -Force
+    $finalConfig = Join-Path $finalDist "config.json"
+    if (-not (Test-Path -LiteralPath $finalConfig)) {
+        Copy-Item -LiteralPath (Join-Path $projectRoot "config.json") -Destination $finalConfig
+    }
 }
 finally {
     Pop-Location

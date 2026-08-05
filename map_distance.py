@@ -553,6 +553,12 @@ def select_marker(markers: list[Marker], role: str) -> Marker:
     return max(matches, key=lambda marker: marker.area)
 
 
+def calculate_azimuth_deg(first: Marker, second: Marker) -> float:
+    delta_x = second.x - first.x
+    delta_y = second.y - first.y
+    return (math.degrees(math.atan2(delta_x, -delta_y)) + 360.0) % 360.0
+
+
 def analyze_map(map_image: np.ndarray, cfg: dict[str, Any], debug_path: Path | None = None) -> dict[str, Any]:
     validate_minimap(map_image, cfg)
     grid_cell_px = resolve_grid_cell_px(map_image, cfg)
@@ -561,8 +567,11 @@ def analyze_map(map_image: np.ndarray, cfg: dict[str, Any], debug_path: Path | N
     second, target_mask = detect_yellow_target(map_image, marker_cfg, first)
     markers = [first, second]
     mask = cv2.bitwise_or(player_mask, target_mask)
-    distance_px = math.hypot(first.x - second.x, first.y - second.y)
+    delta_x = second.x - first.x
+    delta_y = second.y - first.y
+    distance_px = math.hypot(delta_x, delta_y)
     meters = distance_px / grid_cell_px * float(cfg["meters_per_grid_cell"])
+    azimuth_deg = calculate_azimuth_deg(first, second)
 
     if debug_path:
         debug = map_image.copy()
@@ -593,6 +602,7 @@ def analyze_map(map_image: np.ndarray, cfg: dict[str, Any], debug_path: Path | N
         "distance_m": meters,
         "distance_km": meters / 1000.0,
         "distance_px": distance_px,
+        "azimuth_deg": azimuth_deg,
         "grid_cell_px": grid_cell_px,
         "from": {"profile": first.profile, "role": first.role, "x": round(first.x, 2), "y": round(first.y, 2)},
         "to": {"profile": second.profile, "role": second.role, "x": round(second.x, 2), "y": round(second.y, 2)},
@@ -615,13 +625,7 @@ def analyze(image: np.ndarray, cfg: dict[str, Any], debug_path: Path | None = No
 
 
 def print_result(result: dict[str, Any]) -> None:
-    print(
-        f"{result['distance_m']:.1f} m "
-        f"({result['distance_km']:.3f} km), "
-        f"grid={result['grid_cell_px']:.2f}px, "
-        f"from={result['from']['role']}({result['from']['x']},{result['from']['y']}) "
-        f"to={result['to']['role']}({result['to']['x']},{result['to']['y']})"
-    )
+    print(f"{result['distance_m']:.1f} m, azimuth {result['azimuth_deg']:.1f} deg")
 
 
 def build_parser() -> argparse.ArgumentParser:
